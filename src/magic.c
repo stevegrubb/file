@@ -91,7 +91,7 @@ file_private const char *file_or_fd(struct magic_set *, const char *, int);
  */
 #define FILE_MMAP_THRESHOLD (256 * 1024)
 
-file_private void *
+file_protected void *
 file_alloc_buffer(size_t len, int *is_mmap)
 {
 	size_t pagesz = CAST(size_t, getpagesize());
@@ -120,7 +120,7 @@ file_alloc_buffer(size_t len, int *is_mmap)
 	return malloc(len);
 }
 
-file_private void
+file_protected void
 file_free_buffer(void *p, size_t len, int is_mmap)
 {
 	if (is_mmap) {
@@ -133,14 +133,14 @@ file_free_buffer(void *p, size_t len, int is_mmap)
 	free(p);
 }
 #else
-file_private void *
+file_protected void *
 file_alloc_buffer(size_t len, int *is_mmap)
 {
 	*is_mmap = 0;
 	return malloc(len);
 }
 
-file_private void
+file_protected void
 file_free_buffer(void *p, size_t len __attribute__((__unused__)),
 		  int is_mmap __attribute__((__unused__)))
 {
@@ -492,8 +492,6 @@ file_private const char *
 file_or_fd(struct magic_set *ms, const char *inname, int fd)
 {
 	int	rv = -1;
-	unsigned char *buf;
-	int	buf_is_mmap;
 	struct stat	sb;
 	ssize_t nbytes = 0;	/* number of bytes read from a datafile */
 	int	ispipe = 0;
@@ -509,9 +507,22 @@ file_or_fd(struct magic_set *ms, const char *inname, int fd)
 	 */
 #define SLOP (1 + sizeof(union VALUETYPE))
 	const size_t allocsz = ms->bytes_max + SLOP;
-	if ((buf = CAST(unsigned char *, file_alloc_buffer(allocsz,
-						&buf_is_mmap))) == NULL)
-		return NULL;
+	if (ms->longbuf == NULL || ms->longlen < allocsz) {
+		int is_mmap;
+		unsigned char *nbuf;
+
+		nbuf = CAST(unsigned char *, file_alloc_buffer(allocsz,
+						&is_mmap));
+		if (nbuf == NULL)
+			return NULL;
+		if (ms->longbuf != NULL)
+			file_free_buffer(ms->longbuf, ms->longlen,
+					 ms->longbuf_is_mmap);
+		ms->longbuf = nbuf;
+		ms->longlen = allocsz;
+		ms->longbuf_is_mmap = is_mmap;
+	}
+	unsigned char *buf = ms->longbuf;
 	switch (file_fsmagic(ms, inname, &sb)) {
 	case -1:		/* error */
 		goto done;
@@ -607,7 +618,6 @@ file_or_fd(struct magic_set *ms, const char *inname, int fd)
 		goto done;
 	rv = 0;
 done:
-	file_free_buffer(buf, allocsz, buf_is_mmap);
 	if (fd != -1) {
 		if (pos != CAST(off_t, -1))
 			(void)lseek(fd, pos, SEEK_SET);

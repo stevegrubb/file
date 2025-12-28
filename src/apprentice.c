@@ -541,6 +541,9 @@ file_ms_free(struct magic_set *ms)
 		return;
 	for (i = 0; i < MAGIC_SETS; i++)
 		mlist_free(ms->mlist[i]);
+	if (ms->longbuf != NULL)
+		file_free_buffer(ms->longbuf, ms->longlen,
+				 ms->longbuf_is_mmap);
 	free(ms->o.pbuf);
 	free(ms->o.buf);
 	free(ms->c.li);
@@ -568,6 +571,9 @@ file_ms_alloc(int flags)
 
 	ms->o.buf = ms->o.pbuf = NULL;
 	ms->o.blen = 0;
+	ms->longbuf = NULL;
+	ms->longlen = 0;
+	ms->longbuf_is_mmap = 0;
 	len = (ms->c.len = 10) * sizeof(*ms->c.li);
 
 	if ((ms->c.li = CAST(struct level_info *, malloc(len))) == NULL)

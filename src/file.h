@@ -475,6 +475,9 @@ struct magic_set {
 		size_t blen;		/* Length of buffer */
 		char *pbuf;		/* Printable buffer */
 	} o;
+	unsigned char *longbuf;		/* Long term read buffer */
+	size_t longlen;			/* Length of long term buffer */
+	int longbuf_is_mmap;		/* How to release the buffer */
 	uint32_t offset;			/* a copy of m->offset while we */
 					/* are working on the magic entry */
 	uint32_t eoffset;		/* offset from end of file */
@@ -625,6 +628,9 @@ file_protected int file_os2_apptype(struct magic_set *, const char *,
 file_protected int file_pipe_closexec(int *);
 file_protected int file_clear_closexec(int);
 file_protected char *file_strtrim(char *);
+
+file_protected void *file_alloc_buffer(size_t, int *);
+file_protected void file_free_buffer(void *, size_t, int);
 
 file_protected void buffer_init(struct buffer *, int, const struct stat *,
     const void *, size_t);
