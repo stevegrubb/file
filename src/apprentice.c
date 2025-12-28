@@ -3361,20 +3361,23 @@ apprentice_map(struct magic_set *ms, const char *fn)
 	map->type = MAP_TYPE_MMAP;
 	if ((map->p = mmap(0, CAST(size_t, st.st_size), PROT_READ|PROT_WRITE,
 	    MAP_PRIVATE|MAP_FILE, fd, CAST(off_t, 0))) == MAP_FAILED) {
-		file_error(ms, errno, "cannot map `%s'", dbname);
-		goto error;
+		file_magwarn(ms, "cannot map `%s' (%s), falling back to malloc",
+			     dbname, strerror(errno));
+		map->p = NULL;
 	}
-#else
-	map->type = MAP_TYPE_MALLOC;
-	if ((map->p = CAST(void *, malloc(map->len))) == NULL) {
-		file_oomem(ms, map->len);
-		goto error;
-	}
-	if (read(fd, map->p, map->len) != (ssize_t)map->len) {
-		file_badread(ms);
-		goto error;
-	}
+	if (map->p == NULL)
 #endif
+	{
+		map->type = MAP_TYPE_MALLOC;
+		if ((map->p = CAST(void *, malloc(map->len))) == NULL) {
+			file_oomem(ms, map->len);
+			goto error;
+		}
+		if (read(fd, map->p, map->len) != (ssize_t)map->len) {
+			file_badread(ms);
+			goto error;
+		}
+	}
 	(void)close(fd);
 	fd = -1;
 
@@ -3382,7 +3385,8 @@ apprentice_map(struct magic_set *ms, const char *fn)
 		goto error;
 	}
 #ifdef QUICK
-	if (mprotect(map->p, CAST(size_t, st.st_size), PROT_READ) == -1) {
+	if (map->type == MAP_TYPE_MMAP &&
+	    mprotect(map->p, CAST(size_t, st.st_size), PROT_READ) == -1) {
 		file_error(ms, errno, "cannot mprotect `%s'", dbname);
 		goto error;
 	}

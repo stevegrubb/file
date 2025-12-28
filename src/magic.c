@@ -43,6 +43,9 @@ FILE_RCSID("@(#)$File: magic.c,v 1.124 2024/12/08 19:00:59 christos Exp $")
 #include <string.h>
 #ifdef QUICK
 #include <sys/mman.h>
+#ifndef MAP_ANON
+#define MAP_ANON MAP_ANONYMOUS
+#endif
 #endif
 #include <limits.h>	/* for PIPE_BUF */
 
@@ -75,6 +78,74 @@ file_private int unreadable_info(struct magic_set *, mode_t, const char *);
 file_private const char* get_default_magic(void);
 #ifndef COMPILE_ONLY
 file_private const char *file_or_fd(struct magic_set *, const char *, int);
+#endif
+
+#ifdef QUICK
+/*
+ * Large descriptor reads (multi‑megabyte) can cause glibc to bump its
+ * mmap_threshold up to the request size.  The next allocation of a similar
+ * size is then satisfied from the main arena instead of via mmap(2), and the
+ * freed chunk remains in the arena as an unreturned fordblk.  Allocating our
+ * temporary buffer with mmap() sidesteps that heuristic so each large buffer
+ * is fully released back to the kernel after use.
+ */
+#define FILE_MMAP_THRESHOLD (256 * 1024)
+
+file_private void *
+file_alloc_buffer(size_t len, int *is_mmap)
+{
+	size_t pagesz = CAST(size_t, getpagesize());
+	size_t rounded;
+	size_t maplen;
+
+	*is_mmap = 0;
+
+	if (len >= FILE_MMAP_THRESHOLD) {
+		size_t adjust = pagesz - 1;
+		if (len > SIZE_MAX - adjust)
+			return NULL;
+		rounded = len + adjust;
+		maplen = rounded / pagesz;
+		if (maplen > SIZE_MAX / pagesz)
+			return NULL;
+		maplen *= pagesz;
+		void *p = mmap(NULL, maplen, PROT_READ | PROT_WRITE,
+			       MAP_PRIVATE | MAP_ANON, -1, 0);
+		if (p != MAP_FAILED) {
+			*is_mmap = 1;
+			return p;
+		}
+	}
+
+	return malloc(len);
+}
+
+file_private void
+file_free_buffer(void *p, size_t len, int is_mmap)
+{
+	if (is_mmap) {
+		size_t pagesz = CAST(size_t, getpagesize());
+		size_t maplen = (len + pagesz - 1) & ~(pagesz - 1);
+		(void)munmap(p, maplen);
+		return;
+	}
+
+	free(p);
+}
+#else
+file_private void *
+file_alloc_buffer(size_t len, int *is_mmap)
+{
+	*is_mmap = 0;
+	return malloc(len);
+}
+
+file_private void
+file_free_buffer(void *p, size_t len __attribute__((__unused__)),
+		  int is_mmap __attribute__((__unused__)))
+{
+	free(p);
+}
 #endif
 
 #ifndef	STDIN_FILENO
@@ -422,6 +493,7 @@ file_or_fd(struct magic_set *ms, const char *inname, int fd)
 {
 	int	rv = -1;
 	unsigned char *buf;
+	int	buf_is_mmap;
 	struct stat	sb;
 	ssize_t nbytes = 0;	/* number of bytes read from a datafile */
 	int	ispipe = 0;
@@ -436,9 +508,10 @@ file_or_fd(struct magic_set *ms, const char *inname, int fd)
 	 * some overlapping space for matches near EOF
 	 */
 #define SLOP (1 + sizeof(union VALUETYPE))
-	if ((buf = CAST(unsigned char *, malloc(ms->bytes_max + SLOP))) == NULL)
+	const size_t allocsz = ms->bytes_max + SLOP;
+	if ((buf = CAST(unsigned char *, file_alloc_buffer(allocsz,
+						&buf_is_mmap))) == NULL)
 		return NULL;
-
 	switch (file_fsmagic(ms, inname, &sb)) {
 	case -1:		/* error */
 		goto done;
@@ -534,7 +607,7 @@ file_or_fd(struct magic_set *ms, const char *inname, int fd)
 		goto done;
 	rv = 0;
 done:
-	free(buf);
+	file_free_buffer(buf, allocsz, buf_is_mmap);
 	if (fd != -1) {
 		if (pos != CAST(off_t, -1))
 			(void)lseek(fd, pos, SEEK_SET);
