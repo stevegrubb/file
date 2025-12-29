@@ -629,7 +629,7 @@ file_protected int file_pipe_closexec(int *);
 file_protected int file_clear_closexec(int);
 file_protected char *file_strtrim(char *);
 
-file_protected void *file_alloc_buffer(size_t, int *);
+file_protected void *file_alloc_buffer(size_t, int *, size_t *);
 file_protected void file_free_buffer(void *, size_t, int);
 
 file_protected void buffer_init(struct buffer *, int, const struct stat *,

@@ -91,28 +91,61 @@ file_private const char *file_or_fd(struct magic_set *, const char *, int);
  */
 #define FILE_MMAP_THRESHOLD (256 * 1024)
 
-file_protected void *
-file_alloc_buffer(size_t len, int *is_mmap)
+file_private size_t
+file_pagesize(void)
 {
-	size_t pagesz = CAST(size_t, getpagesize());
+	static size_t cached_pagesize = 0;
+
+	if (cached_pagesize == 0)
+		cached_pagesize = CAST(size_t, getpagesize());
+
+	return cached_pagesize;
+}
+
+file_private int
+file_roundup_pagesize(size_t len, size_t pagesz, size_t *maplen)
+{
+	size_t adjust = pagesz - 1;
 	size_t rounded;
-	size_t maplen;
+	size_t page_count;
+
+	if (len > SIZE_MAX - adjust)
+		return -1;
+
+	rounded = len + adjust;
+	page_count = rounded / pagesz;
+
+	/*
+	 * page_count now holds the number of pages required.  Guard against
+	 * overflow when converting back to a byte length.
+	 */
+	if (page_count > SIZE_MAX / pagesz)
+		return -1;
+
+	*maplen = page_count * pagesz;
+
+	return 0;
+}
+
+file_protected void *
+file_alloc_buffer(size_t len, int *is_mmap, size_t *alloclen)
+{
+	const size_t pagesz = file_pagesize();
+	size_t maplen = len;
 
 	*is_mmap = 0;
+	if (alloclen != NULL)
+		*alloclen = len;
 
 	if (len >= FILE_MMAP_THRESHOLD) {
-		size_t adjust = pagesz - 1;
-		if (len > SIZE_MAX - adjust)
+		if (file_roundup_pagesize(len, pagesz, &maplen) == -1)
 			return NULL;
-		rounded = len + adjust;
-		maplen = rounded / pagesz;
-		if (maplen > SIZE_MAX / pagesz)
-			return NULL;
-		maplen *= pagesz;
 		void *p = mmap(NULL, maplen, PROT_READ | PROT_WRITE,
 			       MAP_PRIVATE | MAP_ANON, -1, 0);
 		if (p != MAP_FAILED) {
 			*is_mmap = 1;
+			if (alloclen != NULL)
+				*alloclen = maplen;
 			return p;
 		}
 	}
@@ -124,8 +157,12 @@ file_protected void
 file_free_buffer(void *p, size_t len, int is_mmap)
 {
 	if (is_mmap) {
-		size_t pagesz = CAST(size_t, getpagesize());
-		size_t maplen = (len + pagesz - 1) & ~(pagesz - 1);
+		const size_t pagesz = file_pagesize();
+		size_t maplen;
+
+		if (file_roundup_pagesize(len, pagesz, &maplen) == -1)
+			maplen = len;
+
 		(void)munmap(p, maplen);
 		return;
 	}
@@ -134,8 +171,10 @@ file_free_buffer(void *p, size_t len, int is_mmap)
 }
 #else
 file_protected void *
-file_alloc_buffer(size_t len, int *is_mmap)
+file_alloc_buffer(size_t len, int *is_mmap, size_t *alloclen)
 {
+	if (alloclen != NULL)
+		*alloclen = len;
 	*is_mmap = 0;
 	return malloc(len);
 }
@@ -512,14 +551,13 @@ file_or_fd(struct magic_set *ms, const char *inname, int fd)
 		unsigned char *nbuf;
 
 		nbuf = CAST(unsigned char *, file_alloc_buffer(allocsz,
-						&is_mmap));
+						&is_mmap, &ms->longlen));
 		if (nbuf == NULL)
 			return NULL;
 		if (ms->longbuf != NULL)
 			file_free_buffer(ms->longbuf, ms->longlen,
 					 ms->longbuf_is_mmap);
 		ms->longbuf = nbuf;
-		ms->longlen = allocsz;
 		ms->longbuf_is_mmap = is_mmap;
 	}
 	unsigned char *buf = ms->longbuf;
